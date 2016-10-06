@@ -1,0 +1,1250 @@
+
+from pox.core import core
+import pox.openflow.libopenflow_01 as of
+from pox.lib.util import dpidToStr
+from pox.lib.addresses import IPAddr, EthAddr
+from pox.lib.packet.arp import arp
+from pox.lib.packet.ethernet import ethernet, ETHER_BROADCAST
+from pox.lib.packet.packet_base import packet_base
+from pox.lib.packet.packet_utils import *
+import pox.lib.packet as pkt
+from pox.lib.recoco import Timer
+import time
+import random
+ 
+log = core.getLogger()
+
+NumOfBS = 12
+
+BS_eth = {}
+for x in range(1, NumOfBS+1):
+   BS_eth[x]=0
+
+BS_Received = {}
+BS_Received_pre = {}
+
+for x in range(1, NumOfBS+1):
+   BS_Received[x]=0
+   BS_Received_pre[x]=0
+
+turn=0
+ 
+BS_Intensity={}
+for x in range(1, NumOfBS+1):
+   BS_Intensity[x]=0
+
+
+
+def getTheTime():  #fuction to create a timestamp
+  flock = time.localtime()
+  then = "[%s-%s-%s" %(str(flock.tm_year),str(flock.tm_mon),str(flock.tm_mday))
+ 
+  if int(flock.tm_hour)<10:
+    hrs = "0%s" % (str(flock.tm_hour))
+  else:
+    hrs = str(flock.tm_hour)
+  if int(flock.tm_min)<10:
+    mins = "0%s" % (str(flock.tm_min))
+  else:
+    mins = str(flock.tm_min)
+ 
+  if int(flock.tm_sec)<10:
+    secs = "0%s" % (str(flock.tm_sec))
+  else:
+    secs = str(flock.tm_sec)
+ 
+  then +="]%s.%s.%s" % (hrs,mins,secs)
+  return then
+ 
+ 
+def _timer_func ():
+   global NumOfBS, BS_eth, turn
+
+   for x in range(1, NumOfBS+1):
+	core.openflow.getConnection(BS_eth[x]).send(of.ofp_stats_request(body=of.ofp_port_stats_request()))
+
+   #OR ANOTHER METHOD
+   """
+   for connection in core.openflow._connections.values():
+   	 	connection.send(of.ofp_stats_request(body=of.ofp_flow_stats_request()))
+   """
+
+   """
+   msg = of.ofp_flow_mod()
+   msg.command=of.OFPFC_MODIFY_STRICT
+   msg.priority =100
+   msg.idle_timeout = 0
+   msg.hard_timeout = 0
+   msg.match.dl_type = 0x0800
+   msg.match.nw_dst = "10.0.0.2"
+   msg.actions.append(of.ofp_action_output(port = turn+2))
+   core.openflow.getConnection(BS_eth[1]).send(msg)
+   turn=(turn+1)%3
+   """
+   
+   for x in range(1, NumOfBS+1):
+	if BS_Received[x] - BS_Received_pre[x] > 0:
+	   print "Base Station: ",x," -> Received: ", BS_Received[x]
+	   BS_Intensity[x] = BS_Received[x] - BS_Received_pre[x]
+	   print "Intensity at station: ",x," -> ", BS_Intensity[x] 
+	   BS_Received_pre[x] = BS_Received[x]
+
+   
+   return
+
+def _check_Intensity(*switches):
+   minIntensity = 1000000
+   selectedSwitch = 1000
+   for x in switches:
+	if BS_Intensity[x] < minIntensity:
+	   minIntensity = BS_Intensity[x]
+	   selectedSwitch = x
+
+   return selectedSwitch
+
+
+   
+def _handle_portstats_received (event):
+   #global s1_dpid, s2_dpid, s3_dpid, s4_dpid, s5_dpid, s6_dpid, s7_dpid, s8_dpid
+   global NumOfBS, BS_eth, BS_Received
+
+   for x in range(1, NumOfBS+1):
+	if event.connection.dpid == BS_eth[x]:
+	   for f in event.stats:
+		if int(f.port_no) < 65534:
+		   BS_Received[x] += f.rx_packets
+
+
+def _handle_ConnectionUp (event):
+  #global s1_dpid, s2_dpid, s3_dpid, s4_dpid, s5_dpid, s6_dpid, s7_dpid, s8_dpid
+  
+  global BS_eth, NumOfBS  
+  print "ConnectionUp: ",dpidToStr(event.connection.dpid)
+ 
+  for m in event.connection.features.ports:
+	for x in range(1, NumOfBS+1):
+	   if m.name == "s{}-eth1".format(x):
+		BS_eth[x] = event.connection.dpid
+		print "s{}_eth1:{}".format(x, BS_eth[x])
+
+  Timer(1, _timer_func, recurring=True)   
+  
+ 
+def _handle_PacketIn(event):
+  #global s1_dpid, s2_dpid, s3_dpid, s4_dpid, s5_dpid, s6_dpid, s7_dpid, s8_dpid
+  global NumOfBS, BS_eth
+  
+
+  packet=event.parsed
+  #print "_handle_PacketIn is called, packet.type:", packet.type, " event.connection.dpid:", event.connection.dpid
+ 
+  if event.connection.dpid==BS_eth[1]:
+     
+     a=packet.find('arp')
+     
+     switches = [2,4]
+     base_station = _check_Intensity(*switches) 
+     switches = []
+     if base_station==2:
+	selected_port_number=2
+     if base_station==4:
+	selected_port_number=3
+
+     if a and a.protodst=="10.0.0.2":
+       
+       msg = of.ofp_packet_out(data=event.ofp)
+       msg.actions.append(of.ofp_action_output(port=selected_port_number))
+       event.connection.send(msg)
+ 
+     if a and a.protodst=="10.0.0.1":
+       msg = of.ofp_packet_out(data=event.ofp)
+       msg.actions.append(of.ofp_action_output(port=1))
+       event.connection.send(msg)
+
+     msg = of.ofp_flow_mod()
+     msg.priority =100
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.dl_type = 0x0800
+     msg.match.nw_dst = "10.0.0.1"
+     msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =100
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.dl_type = 0x0800
+     msg.match.nw_dst = "10.0.0.2"
+     msg.actions.append(of.ofp_action_output(port = selected_port_number))
+     event.connection.send(msg)
+
+
+     """
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 1
+     msg.match.dl_type=0x0806
+     msg.actions.append(of.ofp_action_output(port = 2))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 1
+     msg.match.dl_type=0x0800
+     msg.actions.append(of.ofp_action_output(port = 2))
+     event.connection.send(msg)
+  
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 2
+     msg.match.dl_type=0x0806
+     msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+     
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 2
+     msg.match.dl_type=0x0800
+     msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+     """
+ 
+  elif event.connection.dpid==BS_eth[2]: 
+     a=packet.find('arp')
+     
+     switches = [1, 3, 5]
+     base_station = _check_Intensity(*switches) 
+     switches = []
+     if base_station==1:
+	selected_port_number=2
+     if base_station==3:
+	selected_port_number=3
+     if base_station==5:
+	selected_port_number=4
+
+     #Check intensity of the base stations 2-4
+    
+     #num=random.randint(2,4)
+     if a and a.protodst=="10.0.0.2":
+       
+       msg = of.ofp_packet_out(data=event.ofp)
+       msg.actions.append(of.ofp_action_output(port=selected_port_number))
+       event.connection.send(msg)
+ 
+     if a and a.protodst=="10.0.0.1":
+       msg = of.ofp_packet_out(data=event.ofp)
+       msg.actions.append(of.ofp_action_output(port=1))
+       event.connection.send(msg)
+
+     msg = of.ofp_flow_mod()
+     msg.priority =100
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.dl_type = 0x0800
+     msg.match.nw_dst = "10.0.0.1"
+     msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =100
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.dl_type = 0x0800
+     msg.match.nw_dst = "10.0.0.2"
+     msg.actions.append(of.ofp_action_output(port = selected_port_number))
+     event.connection.send(msg)
+     """
+     port = [3,6]
+     base_station = _check_Intensity(*ports) 
+     ports = []
+     if base_station==3:
+	selected_port_number=2
+     if base_station==6:
+	selected_port_number=3
+     """     
+
+     """
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 1
+     msg.match.dl_type=0x0806
+     msg.actions.append(of.ofp_action_output(port = 3))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 1
+     msg.match.dl_type=0x0800
+     msg.actions.append(of.ofp_action_output(port = 3))
+     event.connection.send(msg)
+  
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 2
+     msg.match.dl_type=0x0806
+     msg.actions.append(of.ofp_action_output(port = 3))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 2
+     msg.match.dl_type=0x0800
+     msg.actions.append(of.ofp_action_output(port = 3))
+     event.connection.send(msg)
+
+     #num=random.randint(1,2)
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 3
+     msg.match.dl_type=0x0806
+     msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 3
+     msg.match.dl_type=0x0800
+     msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+     """ 
+
+  elif event.connection.dpid==BS_eth[3]: 
+
+     a=packet.find('arp')
+     
+     switches = [2, 6]
+     base_station = _check_Intensity(*switches) 
+     switches = []
+     if base_station==2:
+	selected_port_number=2
+     if base_station==6:
+	selected_port_number=3
+
+
+     #Check intensity of the base stations 2-4
+    
+     #num=random.randint(2,4)
+     if a and a.protodst=="10.0.0.2":
+       
+       msg = of.ofp_packet_out(data=event.ofp)
+       msg.actions.append(of.ofp_action_output(port=selected_port_number))
+       event.connection.send(msg)
+ 
+     if a and a.protodst=="10.0.0.1":
+       msg = of.ofp_packet_out(data=event.ofp)
+       msg.actions.append(of.ofp_action_output(port=1))
+       event.connection.send(msg)
+
+     msg = of.ofp_flow_mod()
+     msg.priority =100
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.dl_type = 0x0800
+     msg.match.nw_dst = "10.0.0.1"
+     msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =100
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.dl_type = 0x0800
+     msg.match.nw_dst = "10.0.0.2"
+     msg.actions.append(of.ofp_action_output(port = selected_port_number))
+     event.connection.send(msg)
+     """
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 1
+     msg.match.dl_type=0x0806
+     msg.actions.append(of.ofp_action_output(port = 2))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 1
+     msg.match.dl_type=0x0800
+     msg.actions.append(of.ofp_action_output(port = 2))
+     event.connection.send(msg)
+  
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 2
+     msg.match.dl_type=0x0806
+     msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+     
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 2
+     msg.match.dl_type=0x0800
+     msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+     """
+
+
+  elif event.connection.dpid==BS_eth[4]: 
+     a=packet.find('arp')
+
+     switches = [5, 7]
+     base_station = _check_Intensity(*switches) 
+     switches = []
+     if base_station==5:
+	selected_port_number=2
+     if base_station==7:
+	selected_port_number=3
+
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 1
+     msg.match.dl_type=0x0806
+     msg.actions.append(of.ofp_action_output(port = selected_port_number))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 1
+     msg.match.dl_type=0x0800
+     msg.actions.append(of.ofp_action_output(port = selected_port_number))
+     event.connection.send(msg)
+  
+     """
+     if a and a.protodst=="10.0.0.2":
+       
+       msg = of.ofp_packet_out(data=event.ofp)
+       msg.actions.append(of.ofp_action_output(port=selected_port_number))
+       event.connection.send(msg)
+ 
+     if a and a.protodst=="10.0.0.1":
+       msg = of.ofp_packet_out(data=event.ofp)
+       msg.actions.append(of.ofp_action_output(port=1))
+       event.connection.send(msg)
+    """
+
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 2
+     msg.match.dl_type=0x0806
+     if a and a.protodst=="10.0.0.2":
+     	msg.actions.append(of.ofp_action_output(port = 3))
+     if a and a.protodst=="10.0.0.1":
+     	msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 2
+     msg.match.dl_type=0x0800
+     if a and a.protodst=="10.0.0.2":
+     	msg.actions.append(of.ofp_action_output(port = 3))
+     if a and a.protodst=="10.0.0.1":
+     	msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+
+     switches2 = [1, 5]
+     base_station2 = _check_Intensity(*switches2) 
+     switches2 = []
+     if base_station2==1:
+	selected_port_number2=1
+     if base_station2==5:
+	selected_port_number2=2
+
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 3
+     msg.match.dl_type=0x0806
+     msg.actions.append(of.ofp_action_output(port = selected_port_number2))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 3
+     msg.match.dl_type=0x0800
+     msg.actions.append(of.ofp_action_output(port = selected_port_number2))
+     event.connection.send(msg)
+
+
+
+  elif event.connection.dpid==BS_eth[5]: 
+     a=packet.find('arp')
+
+     switches = [4, 6, 8]
+     base_station = _check_Intensity(*switches) 
+     switches = []
+     if base_station==4:
+	selected_port_number=2
+     if base_station==6:
+	selected_port_number=3
+     if base_station==8:
+	selected_port_number=4
+
+
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 1
+     msg.match.dl_type=0x0806
+     msg.actions.append(of.ofp_action_output(port = selected_port_number))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 1
+     msg.match.dl_type=0x0800
+     msg.actions.append(of.ofp_action_output(port = selected_port_number))
+     event.connection.send(msg)
+
+  
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 2
+     msg.match.dl_type=0x0806
+     if a and a.protodst=="10.0.0.2":
+     	msg.actions.append(of.ofp_action_output(port = 4))
+     if a and a.protodst=="10.0.0.1":
+     	msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 2
+     msg.match.dl_type=0x0800
+     if a and a.protodst=="10.0.0.2":
+     	msg.actions.append(of.ofp_action_output(port = 4))
+     if a and a.protodst=="10.0.0.1":
+     	msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 3
+     msg.match.dl_type=0x0806
+     if a and a.protodst=="10.0.0.2":
+     	msg.actions.append(of.ofp_action_output(port = 4))
+     if a and a.protodst=="10.0.0.1":
+     	msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 3
+     msg.match.dl_type=0x0800
+     if a and a.protodst=="10.0.0.2":
+     	msg.actions.append(of.ofp_action_output(port = 4))
+     if a and a.protodst=="10.0.0.1":
+     	msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+
+
+     switches2 = [2, 4, 6]
+     base_station2 = _check_Intensity(*switches2) 
+     switches2 = []
+     if base_station2==2:
+	selected_port_number2=1
+     if base_station2==4:
+	selected_port_number2=2
+     if base_station2==6:
+	selected_port_number2=3
+
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 4
+     msg.match.dl_type=0x0806
+     msg.actions.append(of.ofp_action_output(port = selected_port_number2))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 4
+     msg.match.dl_type=0x0800
+     msg.actions.append(of.ofp_action_output(port = selected_port_number2))
+     event.connection.send(msg)
+ 
+  elif event.connection.dpid==BS_eth[6]: 
+     a=packet.find('arp')
+
+     switches = [5, 9]
+     base_station = _check_Intensity(*switches) 
+     switches = []
+     if base_station==5:
+	selected_port_number=2
+     if base_station==9:
+	selected_port_number=3     
+
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 1
+     msg.match.dl_type=0x0806
+     msg.actions.append(of.ofp_action_output(port = selected_port_number))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 1
+     msg.match.dl_type=0x0800
+     msg.actions.append(of.ofp_action_output(port = selected_port_number))
+     event.connection.send(msg)
+  
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 2
+     msg.match.dl_type=0x0806
+     if a and a.protodst=="10.0.0.2":
+     	msg.actions.append(of.ofp_action_output(port = 3))
+     if a and a.protodst=="10.0.0.1":
+     	msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 2
+     msg.match.dl_type=0x0800
+     if a and a.protodst=="10.0.0.2":
+     	msg.actions.append(of.ofp_action_output(port = 3))
+     if a and a.protodst=="10.0.0.1":
+     	msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+
+     switches2 = [3, 5]
+     base_station2 = _check_Intensity(*switches2) 
+     switches2 = []
+     if base_station2==3:
+	selected_port_number2=1
+     if base_station2==5:
+	selected_port_number2=2
+
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 3
+     msg.match.dl_type=0x0806
+     msg.actions.append(of.ofp_action_output(port = selected_port_number2))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 3
+     msg.match.dl_type=0x0800
+     msg.actions.append(of.ofp_action_output(port = selected_port_number2))
+     event.connection.send(msg)
+
+
+
+
+
+
+  elif event.connection.dpid==BS_eth[7]: 
+     a=packet.find('arp')
+
+     switches = [8, 10]
+     base_station = _check_Intensity(*switches) 
+     switches = []
+     if base_station==8:
+	selected_port_number=2
+     if base_station==10:
+	selected_port_number=3
+
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 1
+     msg.match.dl_type=0x0806
+     msg.actions.append(of.ofp_action_output(port = selected_port_number))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 1
+     msg.match.dl_type=0x0800
+     msg.actions.append(of.ofp_action_output(port = selected_port_number))
+     event.connection.send(msg)
+  
+     """
+     if a and a.protodst=="10.0.0.2":
+       
+       msg = of.ofp_packet_out(data=event.ofp)
+       msg.actions.append(of.ofp_action_output(port=selected_port_number))
+       event.connection.send(msg)
+ 
+     if a and a.protodst=="10.0.0.1":
+       msg = of.ofp_packet_out(data=event.ofp)
+       msg.actions.append(of.ofp_action_output(port=1))
+       event.connection.send(msg)
+    """
+
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 2
+     msg.match.dl_type=0x0806
+     if a and a.protodst=="10.0.0.2":
+     	msg.actions.append(of.ofp_action_output(port = 3))
+     if a and a.protodst=="10.0.0.1":
+     	msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 2
+     msg.match.dl_type=0x0800
+     if a and a.protodst=="10.0.0.2":
+     	msg.actions.append(of.ofp_action_output(port = 3))
+     if a and a.protodst=="10.0.0.1":
+     	msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+
+     switches2 = [4, 8]
+     base_station2 = _check_Intensity(*switches2) 
+     switches2 = []
+     if base_station2==4:
+	selected_port_number2=1
+     if base_station2==8:
+	selected_port_number2=2
+
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 3
+     msg.match.dl_type=0x0806
+     msg.actions.append(of.ofp_action_output(port = selected_port_number2))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 3
+     msg.match.dl_type=0x0800
+     msg.actions.append(of.ofp_action_output(port = selected_port_number2))
+     event.connection.send(msg)
+
+
+
+  elif event.connection.dpid==BS_eth[8]: 
+     a=packet.find('arp')
+
+     switches = [7, 9, 11]
+     base_station = _check_Intensity(*switches) 
+     switches = []
+     if base_station==7:
+	selected_port_number=2
+     if base_station==9:
+	selected_port_number=3
+     if base_station==11:
+	selected_port_number=4
+
+
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 1
+     msg.match.dl_type=0x0806
+     msg.actions.append(of.ofp_action_output(port = selected_port_number))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 1
+     msg.match.dl_type=0x0800
+     msg.actions.append(of.ofp_action_output(port = selected_port_number))
+     event.connection.send(msg)
+
+  
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 2
+     msg.match.dl_type=0x0806
+     if a and a.protodst=="10.0.0.2":
+     	msg.actions.append(of.ofp_action_output(port = 4))
+     if a and a.protodst=="10.0.0.1":
+     	msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 2
+     msg.match.dl_type=0x0800
+     if a and a.protodst=="10.0.0.2":
+     	msg.actions.append(of.ofp_action_output(port = 4))
+     if a and a.protodst=="10.0.0.1":
+     	msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 3
+     msg.match.dl_type=0x0806
+     if a and a.protodst=="10.0.0.2":
+     	msg.actions.append(of.ofp_action_output(port = 4))
+     if a and a.protodst=="10.0.0.1":
+     	msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 3
+     msg.match.dl_type=0x0800
+     if a and a.protodst=="10.0.0.2":
+     	msg.actions.append(of.ofp_action_output(port = 4))
+     if a and a.protodst=="10.0.0.1":
+     	msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+
+
+     switches2 = [5, 7, 9]
+     base_station2 = _check_Intensity(*switches2) 
+     switches2 = []
+     if base_station2==5:
+	selected_port_number2=1
+     if base_station2==7:
+	selected_port_number2=2
+     if base_station2==9:
+	selected_port_number2=3
+
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 4
+     msg.match.dl_type=0x0806
+     msg.actions.append(of.ofp_action_output(port = selected_port_number2))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 4
+     msg.match.dl_type=0x0800
+     msg.actions.append(of.ofp_action_output(port = selected_port_number2))
+     event.connection.send(msg)
+ 
+  elif event.connection.dpid==BS_eth[9]: 
+     a=packet.find('arp')
+
+     switches = [8, 12]
+     base_station = _check_Intensity(*switches) 
+     switches = []
+     if base_station==8:
+	selected_port_number=2
+     if base_station==12:
+	selected_port_number=3     
+
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 1
+     msg.match.dl_type=0x0806
+     msg.actions.append(of.ofp_action_output(port = selected_port_number))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 1
+     msg.match.dl_type=0x0800
+     msg.actions.append(of.ofp_action_output(port = selected_port_number))
+     event.connection.send(msg)
+  
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 2
+     msg.match.dl_type=0x0806
+     if a and a.protodst=="10.0.0.2":
+     	msg.actions.append(of.ofp_action_output(port = 3))
+     if a and a.protodst=="10.0.0.1":
+     	msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 2
+     msg.match.dl_type=0x0800
+     if a and a.protodst=="10.0.0.2":
+     	msg.actions.append(of.ofp_action_output(port = 3))
+     if a and a.protodst=="10.0.0.1":
+     	msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+
+     switches2 = [6, 8]
+     base_station2 = _check_Intensity(*switches2) 
+     switches2 = []
+     if base_station2==6:
+	selected_port_number2=1
+     if base_station2==8:
+	selected_port_number2=2
+
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 3
+     msg.match.dl_type=0x0806
+     msg.actions.append(of.ofp_action_output(port = selected_port_number2))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 3
+     msg.match.dl_type=0x0800
+     msg.actions.append(of.ofp_action_output(port = selected_port_number2))
+     event.connection.send(msg)
+
+
+
+
+
+  
+  elif event.connection.dpid==BS_eth[10]:
+     a=packet.find('arp')
+     
+     switches = [7,11]
+     base_station = _check_Intensity(*switches) 
+     switches = []
+     if base_station==7:
+	selected_port_number=1
+     if base_station==11:
+	selected_port_number=2
+
+     #Check intensity of the base stations 2-4
+    
+     #num=random.randint(2,4)
+     if a and a.protodst=="10.0.0.2":
+       
+       msg = of.ofp_packet_out(data=event.ofp)
+       msg.actions.append(of.ofp_action_output(port=3))
+       event.connection.send(msg)
+ 
+     if a and a.protodst=="10.0.0.1":
+       msg = of.ofp_packet_out(data=event.ofp)
+       msg.actions.append(of.ofp_action_output(port=selected_port_number))
+       event.connection.send(msg)
+
+     msg = of.ofp_flow_mod()
+     msg.priority =100
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.dl_type = 0x0800
+     msg.match.nw_dst = "10.0.0.1"
+     msg.actions.append(of.ofp_action_output(port = selected_port_number))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =100
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.dl_type = 0x0800
+     msg.match.nw_dst = "10.0.0.2"
+     msg.actions.append(of.ofp_action_output(port = 3))
+     event.connection.send(msg)
+
+     """
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 1
+     msg.match.dl_type=0x0806
+     msg.actions.append(of.ofp_action_output(port = 2))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 1
+     msg.match.dl_type=0x0800
+     msg.actions.append(of.ofp_action_output(port = 2))
+     event.connection.send(msg)
+  
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 2
+     msg.match.dl_type=0x0806
+     msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+     
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 2
+     msg.match.dl_type=0x0800
+     msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+     """
+
+  elif event.connection.dpid==BS_eth[11]: 
+ 
+     a=packet.find('arp')
+     
+     switches = [8, 10, 12]
+     base_station = _check_Intensity(*switches) 
+     switches = []
+     if base_station==8:
+	selected_port_number=1
+     if base_station==10:
+	selected_port_number=2
+     if base_station==12:
+	selected_port_number=3
+
+     #Check intensity of the base stations 2-4
+    
+     #num=random.randint(2,4)
+     if a and a.protodst=="10.0.0.2":
+       
+       msg = of.ofp_packet_out(data=event.ofp)
+       msg.actions.append(of.ofp_action_output(port=4))
+       event.connection.send(msg)
+ 
+     if a and a.protodst=="10.0.0.1":
+       msg = of.ofp_packet_out(data=event.ofp)
+       msg.actions.append(of.ofp_action_output(port=selected_port_number))
+       event.connection.send(msg)
+
+     msg = of.ofp_flow_mod()
+     msg.priority =100
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.dl_type = 0x0800
+     msg.match.nw_dst = "10.0.0.1"
+     msg.actions.append(of.ofp_action_output(port = selected_port_number))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =100
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.dl_type = 0x0800
+     msg.match.nw_dst = "10.0.0.2"
+     msg.actions.append(of.ofp_action_output(port = 4))
+     event.connection.send(msg)
+
+
+     """
+     switches = [6,7,8]
+     base_station = _check_Intensity(*switches) 
+     switches = []
+     if base_station==6:
+	selected_port_number=1
+     if base_station==7:
+	selected_port_number=2
+     if base_station==8:
+	selected_port_number=3
+
+     a=packet.find('arp')
+     if a and a.protodst=="10.0.0.2":
+       #num=random.randint(2,4)
+       msg = of.ofp_packet_out(data=event.ofp)
+       msg.actions.append(of.ofp_action_output(port=4))
+       event.connection.send(msg)
+ 
+     if a and a.protodst=="10.0.0.1":
+       #num=random.randint(1,3)
+       msg = of.ofp_packet_out(data=event.ofp)
+       msg.actions.append(of.ofp_action_output(port=selected_port_number))
+       event.connection.send(msg)
+
+     #num=random.randint(1,3)
+     msg = of.ofp_flow_mod()
+     msg.priority =100
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.dl_type = 0x0800
+     msg.match.nw_dst = "10.0.0.1"
+     msg.actions.append(of.ofp_action_output(port = selected_port_number))
+     event.connection.send(msg)
+ 
+     #num=random.randint(2,4)
+     msg = of.ofp_flow_mod()
+     msg.priority =100
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.dl_type = 0x0800
+     msg.match.nw_dst = "10.0.0.2"
+     msg.actions.append(of.ofp_action_output(port = 4))
+     event.connection.send(msg)
+     """
+
+
+  elif event.connection.dpid==BS_eth[12]: 
+     a=packet.find('arp')
+     
+     switches = [9,11]
+     base_station = _check_Intensity(*switches) 
+     switches = []
+     if base_station==9:
+	selected_port_number=1
+     if base_station==11:
+	selected_port_number=2
+
+     if a and a.protodst=="10.0.0.2":
+       
+       msg = of.ofp_packet_out(data=event.ofp)
+       msg.actions.append(of.ofp_action_output(port=3))
+       event.connection.send(msg)
+ 
+     if a and a.protodst=="10.0.0.1":
+       msg = of.ofp_packet_out(data=event.ofp)
+       msg.actions.append(of.ofp_action_output(port=selected_port_number))
+       event.connection.send(msg)
+
+     msg = of.ofp_flow_mod()
+     msg.priority =100
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.dl_type = 0x0800
+     msg.match.nw_dst = "10.0.0.1"
+     msg.actions.append(of.ofp_action_output(port = selected_port_number))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =100
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.dl_type = 0x0800
+     msg.match.nw_dst = "10.0.0.2"
+     msg.actions.append(of.ofp_action_output(port = 3))
+     event.connection.send(msg)
+
+     """
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 1
+     msg.match.dl_type=0x0806
+     msg.actions.append(of.ofp_action_output(port = 2))
+     event.connection.send(msg)
+ 
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 1
+     msg.match.dl_type=0x0800
+     msg.actions.append(of.ofp_action_output(port = 2))
+     event.connection.send(msg)
+  
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 2
+     msg.match.dl_type=0x0806
+     msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+     
+     msg = of.ofp_flow_mod()
+     msg.priority =10
+     msg.idle_timeout = 0
+     msg.hard_timeout = 0
+     msg.match.in_port = 2
+     msg.match.dl_type=0x0800
+     msg.actions.append(of.ofp_action_output(port = 1))
+     event.connection.send(msg)
+     """
+
+ 
+def launch ():
+  global start_time
+  core.openflow.addListenerByName("PortStatsReceived",_handle_portstats_received)
+  core.openflow.addListenerByName("ConnectionUp", _handle_ConnectionUp)
+  core.openflow.addListenerByName("PacketIn",_handle_PacketIn)

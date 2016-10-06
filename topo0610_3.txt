@@ -1,0 +1,103 @@
+#!/usr/bin/python
+ 
+from mininet.topo import Topo
+from mininet.net import Mininet
+from mininet.node import CPULimitedHost
+from mininet.link import TCLink
+from mininet.util import dumpNodeConnections
+from mininet.log import setLogLevel
+from mininet.node import Controller 
+from mininet.cli import CLI
+from functools import partial
+from mininet.node import RemoteController
+from mininet.wifiPlot import plot
+import os
+
+""" 
+class POXcontroller1( Controller):
+    def start(self):
+        self.pox='%s/pox/pox.py' %os.environ['HOME']
+        self.cmd(self.pox, "projectTopoController1> /projectTopoController1 &")
+    def stop(self):
+        self.cmd('kill %' +self.pox)
+ 
+controllers = { 'poxcontroller': POXcontroller1}
+"""
+
+class MyTopo(Topo):
+    "Single switch connected to n hosts."
+    def __init__(self):
+        Topo.__init__(self)
+	
+	s1 = self.addBaseStation( 's1', ssid= 'new-ssid1', mode= 'g', channel= '1', position='20,35,0', range=25, listenPort=6635)
+        s2 = self.addBaseStation( 's2', ssid= 'new-ssid2', mode= 'g', channel= '1', position='20,20,0', range=25, listenPort=6636)
+        s3 = self.addBaseStation( 's3', ssid= 'new-ssid3', mode= 'g', channel= '1', position='20,5,0', range=25, listenPort=6637)
+       
+	s4 = self.addBaseStation( 's4', ssid= 'new-ssid4', mode= 'g', channel= '1', position='40,35,0', range=25, listenPort=6638)
+        s5 = self.addBaseStation( 's5', ssid= 'new-ssid5', mode= 'g', channel= '1', position='40,20,0', range=25, listenPort=6639)
+	s6 = self.addBaseStation( 's6', ssid= 'new-ssid6', mode= 'g', channel= '1', position='40,5,0', range=25, listenPort=6640)
+
+        s7 = self.addBaseStation( 's7', ssid= 'new-ssid7', mode= 'g', channel= '1', position='60,35,0', range=25, listenPort=6641)
+        s8 = self.addBaseStation( 's8', ssid= 'new-ssid8', mode= 'g', channel= '1', position='60,20,0', range=25, listenPort=6642)
+        s9 = self.addBaseStation( 's9', ssid= 'new-ssid9', mode= 'g', channel= '1', position='60,5,0', range=25, listenPort=6643)
+
+        s10 = self.addBaseStation( 's10', ssid= 'new-ssid10', mode= 'g', channel= '1', position='80,35,0', range=25, listenPort=6644)
+        s11 = self.addBaseStation( 's11', ssid= 'new-ssid11', mode= 'g', channel= '1', position='80,20,0', range=25, listenPort=6645)
+        s12 = self.addBaseStation( 's12', ssid= 'new-ssid12', mode= 'g', channel= '1', position='80,5,0', range=25, listenPort=6646)
+	      
+	h1=self.addStation( 'h1', wlans=3, position='10,20,0', range=35)
+        h4=self.addStation( 'h4', wlans=2, position='90,20,0', range=35)
+
+        self.addLink(h1, s1, bw=1, delay='10ms', loss=0, max_queue_size=1000, use_htb=True)
+        self.addLink(h1, s2, bw=1, delay='10ms', loss=0, max_queue_size=1000, use_htb=True) 
+        self.addLink(h1, s3, bw=1, delay='10ms', loss=0, max_queue_size=1000, use_htb=True) 
+        
+        self.addLink(s1, s2, bw=1, delay='10ms', loss=0, max_queue_size=1000, use_htb=True)
+        self.addLink(s2, s3, bw=1, delay='10ms', loss=0, max_queue_size=1000, use_htb=True) 
+
+
+	self.addLink(s1, s4, bw=1, delay='10ms', loss=0, max_queue_size=1000, use_htb=True) 
+	self.addLink(s2, s5, bw=1, delay='10ms', loss=0, max_queue_size=1000, use_htb=True) 
+        self.addLink(s3, s6, bw=1, delay='10ms', loss=0, max_queue_size=1000, use_htb=True) 
+
+        self.addLink(s4, s5, bw=1, delay='10ms', loss=0, max_queue_size=1000, use_htb=True)
+        self.addLink(s5, s6, bw=1, delay='10ms', loss=0, max_queue_size=1000, use_htb=True) 
+
+
+	self.addLink(s4, s7, bw=1, delay='10ms', loss=0, max_queue_size=1000, use_htb=True)
+        self.addLink(s5, s8, bw=1, delay='10ms', loss=0, max_queue_size=1000, use_htb=True)
+        self.addLink(s6, s9, bw=1, delay='10ms', loss=0, max_queue_size=1000, use_htb=True)
+
+        self.addLink(s7, s8, bw=1, delay='10ms', loss=0, max_queue_size=1000, use_htb=True)
+        self.addLink(s8, s9, bw=1, delay='10ms', loss=0, max_queue_size=1000, use_htb=True) 
+
+
+	self.addLink(s7, s10, bw=1, delay='10ms', loss=0, max_queue_size=1000, use_htb=True) 
+        self.addLink(s8, s11, bw=1, delay='10ms', loss=0, max_queue_size=1000, use_htb=True) 
+        self.addLink(s9, s12, bw=1, delay='10ms', loss=0, max_queue_size=1000, use_htb=True) 
+
+        self.addLink(s10, s11, bw=1, delay='10ms', loss=0, max_queue_size=1000, use_htb=True)  
+        self.addLink(s11, s12, bw=1, delay='10ms', loss=0, max_queue_size=1000, use_htb=True) 
+
+        self.addLink(s10, h4, bw=1, delay='10ms', loss=0, max_queue_size=1000, use_htb=True)
+        self.addLink(s11, h4, bw=1, delay='10ms', loss=0, max_queue_size=1000, use_htb=True) 
+        self.addLink(s12, h4, bw=1, delay='10ms', loss=0, max_queue_size=1000, use_htb=True) 
+       
+        	
+def perfTest():
+    "Create network and run simple performance test"
+    topo = MyTopo()
+    #net = Mininet(topo=topo, host=CPULimitedHost, link=TCLink, controller=POXcontroller1)
+    net = Mininet(topo=topo, host=CPULimitedHost, link=TCLink, controller=partial(RemoteController, ip='127.0.0.1', port=6633))
+    #net.plotGraph(max_x=100, max_y=100)      
+    net.start()
+    print "Dumping host connections"
+    
+
+    net.plotGraph(max_x=100, max_y=100)    
+    CLI(net)
+    net.stop()
+ 
+if __name__ == '__main__':
+    setLogLevel('info')
+    perfTest()
